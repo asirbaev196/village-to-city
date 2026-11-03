@@ -1,0 +1,73 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #87ceeb;
+  touch-action: none;           /* отключаем скролл/зум */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+canvas { display: block; }
+
+#info {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: white;
+  font-family: system-ui, sans-serif;
+  font-size: 15px;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+  pointer-events: none;
+  z-index: 10;
+  white-space: nowrap;
+}
+
+/* Крестовина */
+#controls {
+  position: fixed;
+  bottom: 24px;
+  left: 24px;
+  width: 168px;
+  height: 168px;
+  z-index: 20;
+}
+
+.btn {
+  position: absolute;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  border: none;
+  background: rgba(255, 255, 255, 0.85);
+  color: #222;
+  font-size: 22px;
+  font-weight: bold;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.25);
+  touch-action: none;
+  cursor: pointer;
+  transition: background 0.1s, transform 0.1s;
+}
+.btn:active,
+.btn.pressed {
+  background: rgba(80, 160, 255, 0.95);
+  color: white;
+  transform: scale(0.92);
+}
+
+.up    { top: 0;    left: 56px; }
+.left  { top: 56px; left: 0; }
+.right { top: 56px; left: 112px; }
+.down  { top: 112px; left: 56px; }
+
+/* На маленьких экранах чуть меньше */
+@media (max-width: 380px) {
+  #controls { width: 144px; height: 144px; }
+  .btn { width: 48px; height: 48px; font-size: 18px; }
+  .up    { left: 48px; }
+  .left  { top: 48px; }
+  .right { top: 48px; left: 96px; }
+  .down  { top: 96px; left: 48px; }
+}
