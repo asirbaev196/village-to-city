@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Деревня у Леса и Горы</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    background:#1a1a2e;
+    font-family:'Segoe UI', sans-serif;
+    overflow:hidden;
+    user-select:none;
+    color:#fff;
+  }
+  #game { display:block; cursor:pointer; }
+
+  /* Верхняя панель ресурсов */
+  #hud {
+    position:fixed; top:0; left:0; right:0;
+    background:rgba(20,20,35,0.92);
+    padding:10px 16px;
+    display:flex; gap:20px; align-items:center;
+    border-bottom:2px solid #444;
+    font-size:15px;
+    z-index:10;
+    flex-wrap:wrap;
+  }
+  .res { display:flex; align-items:center; gap:5px; }
+  .res b { color:#ffd93d; }
+
+  /* XP бар */
+  #xpBar {
+    flex:1; min-width:150px;
+    height:18px; background:#333;
+    border-radius:9px; overflow:hidden;
+    position:relative;
+  }
+  #xpFill {
+    height:100%; width:0%;
+    background:linear-gradient(90deg,#4ade80,#22d3ee);
+    transition:width 0.3s;
+  }
+  #xpText {
+    position:absolute; width:100%; text-align:center;
+    font-size:12px; line-height:18px; font-weight:bold;
+    text-shadow:0 0 3px #000;
+  }
+
+  /* Нижняя панель */
+  #panel {
+    position:fixed; bottom:0; left:0; right:0;
+    background:rgba(20,20,35,0.92);
+    padding:10px 16px;
+    display:flex; gap:10px; align-items:center;
+    border-top:2px solid #444;
+    z-index:10;
+    flex-wrap:wrap;
+  }
+  button {
+    background:#3b82f6; color:#fff;
+    border:none; padding:8px 14px;
+    border-radius:6px; cursor:pointer;
+    font-size:14px; font-weight:bold;
+    transition:transform 0.1s, background 0.2s;
+  }
+  button:hover:not(:disabled) { background:#2563eb; transform:translateY(-1px); }
+  button:disabled { background:#444; color:#888; cursor:not-allowed; }
+  button.build { background:#22c55e; }
+  button.build:hover:not(:disabled) { background:#16a34a; }
+
+  #hint {
+    position:fixed; bottom:70px; left:50%;
+    transform:translateX(-50%);
+    background:rgba(0,0,0,0.8);
+    padding:8px 16px; border-radius:8px;
+    font-size:13px; opacity:0;
+    transition:opacity 0.3s; pointer-events:none;
+    z-index:20;
+  }
+  #hint.show { opacity:1; }
+
+  /* Тултип при наведении на объект */
+  #tooltip {
+    position:fixed;
+    background:rgba(0,0,0,0.9);
+    padding:6px 10px; border-radius:6px;
+    font-size:12px; pointer-events:none;
+    display:none; z-index:30;
+    border:1px solid #555;
+    white-space:nowrap;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div class="res">🪵 <b id="rWood">0</b></div>
+  <div class="res">🪨 <b id="rStone">0</b></div>
+  <div class="res">🌾 <b id="rFood">0</b></div>
+  <div class="res">👥 <b id="rPop">0</b>/<span id="rPopMax">0</span></div>
+  <div class="res">⭐ <b id="rLevel">1</b></div>
+  <div id="xpBar">
+    <div id="xpFill"></div>
+    <div id="xpText">0 / 10 XP</div>
+  </div>
+</div>
+
+<div id="panel">
+  <button class="build" id="btnWoodcutter">🪓 Лесопилка (10🪵)</button>
+  <button class="build" id="btnQuarry">⛏️ Каменоломня (15🪨)</button>
+  <button class="build" id="btnFarm">🌾 Ферма (8🪵 5🪨)</button>
+  <button class="build" id="btnHouse">🏠 Дом (12🪵 8🪨)</button>
+  <button id="btnReset">🔄 Заново</button>
+</div>
+
+<div id="hint"></div>
+<div id="tooltip"></div>
+
+<script>
+// ============================================================
+// КОНФИГУРАЦИЯ
+// ============================================================
+const TILE_W = 64;       // ширина тайла
+const TILE_H = 32;       // высота тайла (2:1 изометрия)
+const MAP_W = 16;
+const MAP_H = 16;
+
+const XP_PER_LEVEL = [0, 10, 25, 50, 90, 150, 250, 400, 600, 900, 1500];
+// уровни: до XP_PER_LEVEL[lvl+1]
+
+// ============================================================
+// СОСТОЯНИЕ ИГРЫ
+// ============================================================
+const game = {
+  wood: 0,
+  stone: 0,
+  food: 0,
+  level: 1,
+  xp: 0,
+  tiles: [],       // сетка [y][x] = {type, building, id, assigned}
+  buildings: [],   // список зданий
+  nextBuildId: 1,
+  camera: { x: 0, y: 0, zoom: 1 },
+  hovered: null,
+  time: 0,
+  lastTick: 0,
+};
+
+// Типы тайлов
+const T = { EMPTY:'empty', FOREST:'forest', MOUNTAIN:'mountain', HOUSE:'house', FIELD:'field' };
+
+// Меню зданий
+const BUILDINGS = {
+  woodcutter: {
+    name:'Лесопилка', emoji:'🪓',
+    cost:{ wood:10, stone:0 },
+    desc:'+1 🪵/сек за жителя',
+    workers:1, resource:'wood', rate:1,
+    color:'#8b5a2b'
+  },
+  quarry: {
+    name:'Каменоломня', emoji:'⛏️',
+    cost:{ wood:0, stone:15 },
+    desc:'+1 🪨/сек за жителя',
+    workers:1, resource:'stone', rate:1,
+    color:'#6b7280'
+  },
+  farm: {
+    name:'Ферма', emoji:'🌾',
+    cost:{ wood:8, stone:5 },
+    desc:'+1 🌾/сек за жителя',
+    workers:1, resource:'food', rate:1,
+    color:'#ca8a04'
+  },
+  house: {
+    name:'Дом', emoji:'🏠',
+    cost:{ wood:12, stone:8 },
+    desc:'+2 жителя',
+    workers:0, pop:2,
+    color:'#dc2626'
+  }
+};
+
+// ============================================================
+// CANVAS
+// ============================================================
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  game.camera.x = canvas.width / 2;
+  game.camera.y = canvas.height / 4;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ============================================================
+// ИЗОМЕТРИЧЕСКИЕ КООРДИНАТЫ
+// ============================================================
+function isoToScreen(x, y) {
+  return {
+    x: (x - y) * (TILE_W / 2) * game.camera.zoom + game.camera.x,
+    y: (x + y) * (TILE_H / 2) * game.camera.zoom + game.camera.y
+  };
+}
+
+function screenToIso(sx, sy) {
+  const dx = (sx - game.camera.x) / game.camera.zoom;
+  const dy = (sy - game.camera.y) / game.camera.zoom;
+  return {
+    x: Math.floor((dx / (TILE_W/2) + dy / (TILE_H/2)) / 2),
+    y: Math.floor((dy / (TILE_H/2) - dx / (TILE_W/2)) / 2)
+  };
+}
+
+// ============================================================
+// ГЕНЕРАЦИЯ КАРТЫ
+// ============================================================
+function generateMap() {
+  game.tiles = [];
+  for (let y = 0; y < MAP_H; y++) {
+    game.tiles[y] = [];
+    for (let x = 0; x < MAP_W; x++) {
+      game.tiles[y][x] = { type: T.EMPTY, building: null, id: null, assigned: 0 };
+    }
+  }
+  // Лес — левый верхний угол
+  for (let y = 0; y < 5; y++) {
+    for (let x = 0; x < 5; x++) {
+      if (Math.random() > 0.15) game.tiles[y][x].type = T.FOREST;
+    }
+  }
+  // Гора — правый верхний угол
+  for (let y = 0; y < 5; y++) {
+    for (let x = MAP_W-5; x < MAP_W; x++) {
+      if (Math.random() > 0.15) game.tiles[y][x].type = T.MOUNTAIN;
+    }
+  }
+  // Поле — низ
+  for (let y = MAP_H-4; y < MAP_H; y++) {
+    for (let x = 4; x < MAP_W-4; x++) {
+      if (Math.random() > 0.3) game.tiles[y][x].type = T.FIELD;
+    }
+  }
+  // Стартовые домики
+  addBuilding('house', 7, 7, true);
+  addBuilding('house', 8, 8, true);
+  addBuilding('house', 6, 8, true);
+  game.buildings.forEach(b => b.ready = true);
+}
+
+// ============================================================
+// ЗДАНИЯ
+// ============================================================
+function addBuilding(kind, x, y, free=false) {
+  const def = BUILDINGS[kind];
+  const b = {
+    id: game.nextBuildId++,
+    kind, x, y,
+    assigned: 0,
+    progress: 0 та,
+    ready: false,
+    spawnScale: 0
+  };
+  game.buildings.push(b);
+  game.tiles[y][x].building = b;
+  game.tiles[y][x].id = b.id;
+  return b;
+}
+
+function canAfford(cost) {
+  return game.wood >= (cost.wood||0) && game.stone >= (cost.stone||0);
+}
+
+function tryBuild(kind) {
+  const def = BUILDINGS[kind];
+  if (!canAfford(def.cost)) {
+    showHint('Недостаточно ресурсов!');
+    return false;
+  }
+  // Найти свободный тайл рядом с центром (ищем ближайший к центру)
+  const spot = findBuildSpot();
+  if (!spot) {
+    showHint('Нет места для постройки!');
+    return false;
+  }
+  game.wood -= def.cost.wood || 0;
+  game.stone -= def.cost.stone || 0;
+  addBuilding(kind, spot.x, spot.y);
+  showHint(`Построено: ${def.name}`);
+  updateHUD();
+  return true;
+}
+
+function findBuildSpot() {
+  // Ищем пустой тайл, ближайший к центру карты (8,8)
+  let best = null, bestDist = Infinity;
+  for (let y = 0; y < MAP_H; y++) {
+    for (let x = 0; x < MAP_W; x++) {
+      const t = game.tiles[y][x];
+      if (t.building) continue;
+      if (t.type === T.FOREST || t.type === T.MOUNTAIN) continue;
+      const d = Math.abs(x - 8) + Math.abs(y - 8);
+      if (d < bestDist) { bestDist = d; best = {x, y}; }
+    }
+  }
+  return best;
+}
+
+// ============================================================
+// РЕНДЕР
+// ============================================================
+function drawTile(x, y, t) {
+  const { x: sx, y: sy } = isoToScreen(x, y);
+  const w = TILE_W * game.camera.zoom;
+  const h = TILE_H * game.camera.zoom;
+
+  // Полйла — ромб
+  let floorColor = '#3a5a40';
+  if (t.type === T.FIELD) floorColor = '#b8a030';
+  if (t.type === T.MOUNTAIN) floorColor = '#555';
+  if (t.building) floorColor = '#4a4a5a';
+
+  ctx.beginPath();
+  ctx.moveTo(sx, sy);
+  ctx.lineTo(sx + w/2, sy + h/2);
+  ctx.lineTo(sx, sy + h);
+  ctx.lineTo(sx - w/2, sy + h/2);
+  ctx.closePath();
+  ctx.fillStyle = floorColor;
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Объекты на тайле
+  if (t.type === T.FOREST) drawTree(sx, sy + h/2, w, h);
+  if (t.type === T.MOUNTAIN) drawMountain(sx, sy + h/2, w, h);
+  if (t.type === T.FIELD && !t.building) drawField(sx, sy + h/2, w, h);
+  if (t.building) drawBuilding(t.building, sx, sy + h/2, w, h);
+}
+
+function drawTree(sx, sy, w, h) {
+  const s = game.camera.zoom;
+  ctx.fillStyle = '#4a3520';
+  ctx.fillRect(sx - 3*s, sy - 12*s, 6*s, 14*s);
+  ctx.beginPath();
+  ctx.moveTo(sx, sy - 40*s);
+  ctx.lineTo(sx + 16*s, sy - 10*s);
+  ctx.lineTo(sx - 16*s, sy - 10*s);
+  ctx.closePath();
+  ctx.fillStyle = '#2d6a4f';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(sx, sy - 32*s);
+  ctx.lineTo(sx + 20*s, sy + 2*s);
+  ctx.lineTo(sx - 20*s, sy + 2*s);
+  ctx.closePath();
+  ctx.fillStyle = '#40916c';
+  ctx.fill();
+}
+
+function drawMountain(sx, sy, w, h) {
+  const s = game.camera.zoom;
+  ctx.beginPath();
+  ctx.moveTo(sx - 20*s, sy + 5*s);
+  ctx.lineTo(sx, sy - 35*s);
+  ctx.lineTo(sx + 22*s, sy + 5*s);
+  ctx.closePath();
+  ctx.fillStyle = '#6b7280';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(sx - 8*s, sy - 20*s);
+  ctx.lineTo(sx, sy - 35*s);
+  ctx.lineTo(sx + 10*s, sy - 18*s);
+  ctx.closePath();
+  ctx.fillStyle = '#e5e7eb';
+  ctx.fill();
+}
+
+function drawField(sx, sy, w, h) {
+  const s = game.camera.zoom;
+  for (let i = -2; i <= 2; i++) {
+    ctx.fillStyle = '#eab308';
+    ctx.fillRect(sx + i*6*s - 2*s, sy - 4*s, 3*s, 6*s);
+  }
+}
+
+function drawBuilding(b, sx, sy, w, h) {
+  const def = BUILDINGS[b.kind];
+  const s = game.camera.zoom;
+  
+  // Анимация появления
+  if (b.spawnScale < 1) {
+    b.spawnScale = Math.min(1, b.spawnScale + 0.08);
+  }
+  const scale = b.spawnScale;
+
+  // Высота здания зависит от эпохи (уровня)
+  let height = 20;
+  if (b.kind === 'house') height = 22 + (game.level - 1) * 3;
+  if (b.kind === 'woodcutter') height = 18;
+  if (b.kind === 'quarry') height = 20;
+  if (b.kind === 'farm') height = 14;
+  height = Math.min(height, 60);
+  
+  const bh = height * s * scale;
+  const bw = w * 0.7;
+
+  // Тень
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath();
+  ctx.ellipse(sx, sy + 2*s, bw/2, bh*0.15, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // Основание (стена) — изометрия
+  const x0 = sx - bw/2;
+  const y0 = sy - bh;
+  const wallH = bh * 0.85;
+
+  // Левая стена
+  ctx.fillStyle = def.color;
+  ctx.beginPath();
+  ctx.moveTo(x0, y0 + wallH*0.4);
+  ctx.lineTo(sx, y0 + wallH*0.4 + bh*0.35);
+  ctx.lineTo(sx, sy + 3*s);
+  ctx.lineTo(x0, sy - wallH*0.6 + 3*s);
+  ctx.closePath();
+  ctx.fill();
+
+  // Правая стена (темнее)
+  ctx.fillStyle = shadeColor(def.color, -25);
+  ctx.beginPath();
+  ctx.moveTo(x0 + bw, y0 + wallH*0.4);
+  ctx.lineTo(sx, y0 + wallH*0.4 + bh*0.35);
+  ctx.lineTo(sx, sy + 3*s);
+  ctx.lineTo(x0 + bw, sy - wallH*0.6 + 3*s);
+  ctx.closePath();
+  ctx.fill();
+
+  // Крыша
+  ctx.fillStyle = shadeColor(def.color, 15);
+  ctx.beginPath();
+  ctx.moveTo(x0, y0 + wallH*0.4);
+  ctx.lineTo(x0 + bw, y0 + wallH*0.4);
+  ctx.lineTo(x0 + bw/2, y0 - 8*s + wallH*0.1);
+  ctx.closePath();
+  ctx.fill();
+
+  // Эмодзи иконка здания (сверху)
+  ctx.font = `${14*s}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(def.emoji, sx, y0 + wallH*0.3);
+
+  // Индикатор жителей
+  if (b.kind !== 'house' && def.workers > 0) {
+    ctx.font = `bold ${10*s}px sans-serif`;
+    ctx.fillStyle = b.assigned > 0 ? '#4ade80' : '#888';
+    ctx.fillText(`👤${b.assigned}/${def.workers}`, sx, sy + 12*s);
+  }
+  if (b.kind === 'house') {
+    ctx.font = `bold ${10*s}px sans-serif`;
+    ctx.fillStyle = '#fbbf24';
+    ctx.fillText(`+${def.pop}👥`, sx, sy + 12*s);
+  }
+}
+
+function shadeColor(color, percent) {
+  const num = parseInt(color.replace('#',''), 16);
+  const r = Math.max(0, Math.min(255, (num >> 16) + percent));
+  const g = Math.max(0, Math.min(255, ((num >> 8) & 0xFF) + percent));
+  const b = Math.max(0, Math.min(255, (num & 0xFF) + percent));
+  return `rgb(${r},${g},${b})`;
+}
+
+// ============================================================
+// ГЛАВНЫЙ ЦИКЛ РЕНДЕРА
+// ============================================================
+function render() {
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Вода/фон вокруг карты — необязательно, просто тёмный фон
+
+  // Рисуем в изометрическом порядке (по y+x, чтобы дальние были сзади)
+  for (let sum = 0; sum < MAP_W + MAP_H; sum++) {
+    for (let y = 0; y < MAP_H; y++) {
+      const x = sum - y;
+      if (x < 0 || x >= MAP_W) continue;
+      drawTile(x, y, game.tiles[y][x]);
+    }
+  }
+}
+
+// ============================================================
+// ИГРОВОЙ ТИК (раз в секунду)
+// ============================================================
+function tick(dt) {
+  game.time += dt;
+  
+  // Авто-добыча
+  game.buildings.forEach(b => {
+    const def = BUILDINGS[b.kind];
+    if (def.resource && b.assigned > 0) {
+      const amount = b.assigned * def.rate * dt;
+      game[def.resource] += amount;
+      addXP(amount * 0.3);
+    }
+  });
+
+  updateHUD();
+}
+
+function addXP(n) {
+  game.xp += n;
+  while (game.level < XP_PER_LEVEL.length - 1 && game.xp >= XP_PER_LEVEL[game.level]) {
+    game.level++;
+    game.xp -= XP_PER_LEVEL[game.level - 1];
+    onLevelUp();
+  }
+}
+
+function onLevelUp() {
+  showHint(`🎉 Уровень ${game.level}! Открыто: ${BUILDINGS.house.name}`);
+}
+
+// ============================================================
+// НАСЕЛЕНИЕ
+// ============================================================
+function getMaxPop() {
+  let max = 0;
+  game.buildings.forEach(b => {
+    if (b.kind === 'house') max += BUILDINGS.house.pop;
+  });
+  return max;
+}
+
+function getAssignedWorkers() {
+  return game.buildings.reduce((sum, b) => sum + b.assigned, 0);
+}
+
+function getFreePop() {
+  return getMaxPop() - getAssignedWorkers();
+}
+
+function assignWorker(b) {
+  if (!b || b.kind === 'house') return;
+  const def = BUILDINGS[b.kind];
+  if (!def.workers) return;
+  if (b.assigned >= def.workers) {
+    // Снять
+    b.assigned--;
+    showHint(`Снят житель с ${def.name}`);
+  } else {
+    if (getFreePop() <= 0) {
+      showHint('Нет свободных жителей!');
+      return;
+    }
+    b.assigned++;
+    showHint(`Житель назначен на ${def.name}`);
+  }
+  updateHUD();
+}
+
+// ============================================================
+// UI
+// ============================================================
+function updateHUD() {
+  document.getElementById('rWood').textContent = Math.floor(game.wood);
+  document.getElementById('rStone').textContent = Math.floor(game.stone);
+  document.getElementById('rFood').textContent = Math.floor(game.food);
+  document.getElementById('rPop').textContent = getAssignedWorkers();
+  document.getElementById('rPopMax').textContent = getMaxPop();
+  document.getElementById('rLevel').textContent = game.level;
+
+  const need = XP_PER_LEVEL[game.level] - XP_PER_LEVEL[game.level-1];
+  const have = game.xp;
+  const pct = Math.min(100, (have / need) * 100);
+  document.getElementById('xpFill').style.width = pct + '%';
+  document.getElementById('xpText').textContent = `${Math.floor(have)} / ${need} XP`;
+
+  // Кнопки построек
+  document.getElementById('btnWoodcutter').disabled = !canAfford(BUILDINGS.woodcutter.cost);
+  document.getElementById('btnQuarry').disabled = !canAfford(BUILDINGS.quarry.cost);
+  document.getElementById('btnFarm').disabled = !canAfford(BUILDINGS.farm.cost);
+  document.getElementById('btnHouse').disabled = !canAfford(BUILDINGS.house.cost);
+}
+
+let hintTimeout;
+function showHint(text) {
+  const el = document.getElementById('hint');
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(hintTimeout);
+  hintTimeout = setTimeout(() => el.classList.remove('show'), 1800);
+}
+
+// ============================================================
+// МЫШЬ
+// ============================================================
+canvas.addEventListener('mousemove', (e) => {
+  const iso = screenToIso(e.clientX, e.clientY);
+  if (iso.x >= 0 && iso.x < MAP_W && iso.y >= 0 && iso.y < MAP_H) {
+    game.hovered = iso;
+  } else {
+    game.hovered = null;
+  }
+});
+
+canvas.addEventListener('click', (e) => {
+  const iso = screenToIso(e.clientX, e.clientY);
+  if (iso.x < 0 || iso.x >= MAP_W || iso.y < 0 || iso.y >= MAP_H) return;
+  const t = game.tiles[iso.y][iso.x];
+
+  // Клик по лесу → рубить
+  if (t.type === T.FOREST && !t.building) {
+    if (Math.random() < 0.3) t.type = T.EMPTY; // дерево исчезает
+    game.wood += 1;
+    addXP(1);
+    spawnFloatText(iso.x, iso.y, '+1 🪵');
+    updateHUD();
+    return;
+  }
+  // Клик по горе → добывать камень
+  if (t.type === T.MOUNTAIN && !t.building) {
+    game.stone += 1;
+    addXP(1);
+    spawnFloatText(iso.x, iso.y, '+1 🪨');
+    updateHUD();
+    return;
+  }
+  // Клик по полю → собрать еду
+  if (t.type === T.FIELD && !t.building) {
+    game.food += 1;
+    addXP(0.5);
+    spawnFloatText(iso.x, iso.y, '+1 🌾');
+    updateHUD();
+    return;
+  }
+  // Клик по зданию → назначить/снять жителя
+  if (t.building) {
+    assignWorker(t.building);
+    updateHUD();
+    return;
+  }
+});
+
+// Плавающий текст
+const floatTexts = [];
+function spawnFloatText(x, y, text) {
+  const pos = isoToScreen(x, y);
+  floatTexts.push({
+    x: pos.x, y: pos.y, text, life: 1.0
+  });
+}
+
+function renderFloatTexts() {
+  for (let i = floatTexts.length - 1; i >= 0; i--) {
+    const f = floatTexts[i];
+    f.life -= 0.02;
+    f.y -= 1.5;
+    if (f.life <= 0) { floatTexts.splice(i, 1); continue; }
+    ctx.globalAlpha = f.life;
+    ctx.fillStyle = '#ffd93d';
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(f.text, f.x, f.y);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ============================================================
+// КНОПКИ
+// ============================================================
+document.getElementById('btnWoodcutter').onclick = () => tryBuild('woodcutter');
+document.getElementById('btnQuarry').onclick = () => tryBuild('quarry');
+document.getElementById('btnFarm').onclick = () => tryBuild('farm');
+document.getElementById('btnHouse').onclick = () => tryBuild('house');
+document.getElementById('btnReset').onclick = () => {
+  if (confirm('Начать заново?')) initGame();
+};
+
+// ============================================================
+// ИНИЦИАЛИЗАЦИЯ
+// ============================================================
+function initGame() {
+  game.wood = 5;
+  game.stone = 0;
+  game.food = 0;
+  game.level = 1;
+  game.xp = 0;
+  game.buildings = [];
+  game.nextBuildId = 1;
+  game.time = 0;
+  game.lastTick = performance.now();
+  generateMap();
+  updateHUD();
+  showHint('Кликай по лесу и горе — собирай ресурсы!');
+}
+
+// ============================================================
+// ГЛАВНЫЙ ЦИКЛ
+// ============================================================
+function loop(now) {
+  const dt = Math.min((now - game.lastTick) / 1000, 0.1);
+  game.lastTick = now;
+
+  if (dt > 0) tick(dt);
+
+  render();
+  renderFloatTexts();
+
+  requestAnimationFrame(loop);
+}
+
+initGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
